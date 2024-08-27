@@ -1,0 +1,280 @@
+---
+title: "de view"
+output: html_document
+---
+
+Code for scRNAseq pathway analysis related to neutrophils
+
+```{r}
+setwd("/Users/mary/non_dropbox/exps/exp042_meninges_stress_dropseq/")
+library(Seurat)
+library(ggplot2)
+library(tidyverse)
+library(magrittr)
+library(here)
+
+```
+
+Get out_preneut, out_neut, out_A .... F (neut clusters)
+```{r}
+load(file=here::here("res/neut_clusters_DE.RData"))
+```
+
+Downloaded database of ensembl to pathways.
+https://reactome.org/download/current/Ensembl2Reactome_All_Levels.txt on 20190715
+```{r}
+
+library(clusterProfiler)
+# Make stat as sign of LFC * -log 10 p-value
+make_forgsea_psigned <- function(de_out){
+  forgsea <- de_out
+  forgsea %<>% dplyr::mutate(stat = sign(LFC)*-log10(p_val))
+  forgsea %<>% dplyr::filter(!is.na(stat))
+  geneList <- forgsea$stat # The Ranked genelist
+  names(geneList) <- forgsea$gene
+  geneList <- sort(geneList, decreasing = T)
+}
+
+geneList_neut <- make_forgsea_psigned(out_neut)
+geneList_preneut <- make_forgsea_psigned(out_preneut)
+geneList_A <- make_forgsea_psigned(out_A)
+geneList_B <- make_forgsea_psigned(out_B)
+geneList_C <- make_forgsea_psigned(out_C)
+geneList_D <- make_forgsea_psigned(out_D)
+geneList_E <- make_forgsea_psigned(out_E)
+geneList_F <- make_forgsea_psigned(out_F)
+
+```
+
+Ensure use correct msigdbr for consistency
+```{r}
+#devtools::install_version("msigdbr", version = "7.1.1", repos = "http://cran.us.r-project.org")
+#Check package version
+help(package="msigdbr") 
+library(msigdbr)
+```
+
+Make GO biological processes term2gene
+```{r}
+term2gene_GOBP <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "BP") %>% 
+dplyr::select(gs_name, gene_symbol) # These are simply converted from human by the pacakge itself.
+length(unique(term2gene_GOBP$gs_name)) # 7526 pathways for 7.1.1
+```
+
+GSEA
+```{r}
+exponent=1
+verbose=T
+
+# fgseaMultilevel as per new package recommendations
+set.seed(12345)
+gseaout_neut_GOBP <- GSEA(geneList_neut, TERM2GENE = term2gene_GOBP, exponent=exponent, pvalueCutoff = 1, verbose = verbose, by="fgsea")
+gseaout_preneut_GOBP <- GSEA(geneList_preneut, TERM2GENE = term2gene_GOBP, exponent=exponent, pvalueCutoff = 1, verbose = verbose, by="fgsea")
+
+gseaout_neut_react <- GSEA(geneList_neut, TERM2GENE = term2gene_react, exponent=exponent, pvalueCutoff = 1, verbose = verbose, by="fgsea")
+gseaout_preneut_react <- GSEA(geneList_preneut, TERM2GENE = term2gene_react, exponent=exponent, pvalueCutoff = 1, verbose = verbose, by="fgsea")
+# 
+gseaout_neut_hallmarks <- GSEA(geneList_neut, TERM2GENE = term2gene_hallmarks, exponent=exponent, pvalueCutoff = 1, verbose = verbose, by="fgsea")
+gseaout_preneut_hallmarks <- GSEA(geneList_preneut, TERM2GENE = term2gene_hallmarks, exponent=exponent, pvalueCutoff = 1, verbose = verbose, by="fgsea")
+
+```
+
+Plotting function
+```{r}
+lynall_gsea_plot <- function(gseaout, name="Unnamed", padjthh=0.05, picwidth=15){
+# View top pathways
+  print(substitute(gseaout))
+print(gseaout@result %>% dplyr::select("Description","NES", "p.adjust") %>% dplyr::filter(p.adjust<padjthh) %>% dplyr::arrange(NES)) 
+
+# Graph
+df <- gseaout@result %>% dplyr::filter(p.adjust<padjthh) %>% dplyr::arrange(NES)
+df$ID %<>% factor(levels=unique(df$ID), ordered = T)
+
+p <- ggplot(df, aes(x = NES, y = ID, color=as.factor(sign(NES)))) + 
+        geom_point(size=4) + 
+        theme_bw(base_size = 14) +
+        scale_colour_manual(limits=c("-1","1"), values=c("dark blue","dark red"), labels=c("Decreased in stress","Increased in stress")) +
+        ylab(NULL) +
+        theme(legend.title = element_blank()) +
+        xlab("Normalized enrichment score") +
+        geom_vline(xintercept = 0) +
+        ggtitle(paste0("GSEA at p(adj)<0.05: \n",name))
+p
+print(p)
+print(nrow(df))
+ggsave(p,path=here::here("pics/"),filename=paste0("gsea_out_",name,"_",padjthh,".pdf"),width=picwidth,height=(2+nrow(df)*0.25))
+}
+
+```
+
+Do all the plots
+```{r}
+
+for ( i in apropos("gseaout") ){
+  name=print(i)
+  lynall_gsea_plot(get(i), name=name, padjthh=0.05)
+}
+
+# Smaller GSEA plots
+lynall_gsea_plot(gseaout_neut_GOBP, name="gseaout_neut_GOBP", padjthh=0.05, picwidth=11)
+
+```
+
+Escarpment functions
+```{r}
+# lynall_escarpment_many function is for if there are lots of genes in leading edge
+library(ggfittext)
+
+lynall_escarpment <- function(gseaout, pathway, version, x=500, y=-0.1, width=7, height=5){
+    if (pathway %in% gseaout@result$ID){
+  leading <- gsub("/", " ", gseaout@result[gseaout@result$Description==pathway,"core_enrichment"])
+  p <- gseaplot(gseaout, pathway, title=pathway, by="runningScore") + annotate(geom="text",x = x, y = y, label=paste0("Leading edge:\n",leading), size=4) + expand_limits(y=c(-0.1, 0.1)) 
+  ggsave(p, filename = paste0(here::here("pics/"),"gsea_escarpment_",pathway,"_",version,".pdf"), width = width, height = height)
+  return(p)
+    } else {
+    print(paste0("Pathway ",pathway," not in gseaout"))
+  }
+}
+
+lynall_escarpment_many <- function(gseaout, pathway, version, ymin=-0.3, ymax=-0.1, width=7, height=5){
+  if (pathway %in% gseaout@result$ID){
+      leading <- gsub("/", " ", gseaout@result[gseaout@result$Description==pathway,"core_enrichment"])
+  p <- gseaplot(gseaout, pathway, title=pathway, by="runningScore") + expand_limits(y=c(ymin, 0.1)) + geom_fit_text(data=data.frame(x=1,y=1), aes(ymin = ymin, ymax = ymax, xmin = 0, xmax = 1000, label = paste0("Leading edge:\n",leading)), reflow=TRUE)
+  ggsave(p, filename = paste0(here::here("pics/"),"gsea_escarpment_",pathway,"_",version,".pdf"), width = width, height = height)
+  print(p)
+  return(p)
+  } else {
+    print(paste0("Pathway ",pathway," not in gseaout"))
+  }
+}
+
+```
+
+Neutrophil escarpment plots
+```{r}
+
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_DETOXIFICATION",version="neutrophils")
+
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_CELL_REDOX_HOMEOSTASIS",version="neutrophils")
+
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_RESPONSE_TO_TYPE_I_INTERFERON",version="neutrophils")
+
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_CYTOKINE_PRODUCTION",version="neutrophils")
+
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_ACTIN_FILAMENT_BASED_PROCESS",version="neutrophils")
+
+# Apollo
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_REGULATION_OF_CELLULAR_COMPONENT_SIZE",version="neutrophils")
+
+lynall_escarpment_many(gseaout_neut_GOBP,"GO_REGULATION_OF_ANATOMICAL_STRUCTURE_SIZE",version="neutrophils")
+
+```
+
+Dot plots
+```{r}
+
+neuts$cond[neuts$cond=="SD"] <- "CSD"
+
+# Violin plots for leading edge genes for specific pathways
+scdata <- neuts[,neuts$Annotation=="Neutrophils"]
+pathway <- "GOBP_DETOXIFICATION"
+gseaout <- gseaout_neut_GOBP
+genes_choice <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- VlnPlot(seur_neut[,seur_neut$Annotation=="Neutrophils"], features=genes_choice, group.by = "cond", cols=c("grey","dark red"), ncol=round(length(genes_choice)/2), pt.size = 0, combine=T) + patchwork::plot_annotation(title=pathway)
+p 
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_leading_edge_genes_by_cond_for_",pathway,".pdf"), width=length(genes_choice)*0.7, height=4)
+
+scdata <- neuts[,neuts$Annotation=="Neutrophils"]
+pathway <- "GOBP_CELL_REDOX_HOMEOSTASIS"
+gseaout <- gseaout_neut_GOBP
+genes_choice <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- VlnPlot(seur_neut[,seur_neut$Annotation=="Neutrophils"], features=genes_choice, group.by = "cond", cols=c("grey","dark red"), ncol=round(length(genes_choice)/2), pt.size = 0, combine=T) + patchwork::plot_annotation(title=pathway)
+p 
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_leading_edge_genes_by_cond_for_",pathway,".pdf"), width=length(genes_choice)*0.7, height=4)
+
+scdata <- neuts[,neuts$Annotation=="Neutrophils"]
+pathway <- "GOBP_RESPONSE_TO_TYPE_I_INTERFERON"
+gseaout <- gseaout_neut_GOBP
+genes_choice <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- VlnPlot(seur_neut[,seur_neut$Annotation=="Neutrophils"], features=genes_choice, group.by = "cond", cols=c("grey","dark red"), ncol=round(length(genes_choice)/2), pt.size = 0, combine=T) + patchwork::plot_annotation(title=pathway)
+p 
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_leading_edge_genes_by_cond_for_",pathway,".pdf"), width=length(genes_choice)*0.7, height=4)
+
+scdata <- neuts[,neuts$Annotation=="Neutrophils"]
+pathway <- "GO_ACTIN_FILAMENT_BASED_PROCESS"
+gseaout <- gseaout_neut_GOBP
+genes_choice <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- VlnPlot(seur_neut[,seur_neut$Annotation=="Neutrophils"], features=genes_choice, group.by = "cond", cols=c("grey","dark red"), ncol=round(length(genes_choice)/2), pt.size = 0, combine=T) + patchwork::plot_annotation(title=pathway)
+p 
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_leading_edge_genes_by_cond_for_",pathway,".pdf"), width=length(genes_choice)*0.7, height=4)
+
+scdata <- neuts[,neuts$Annotation=="Neutrophils"]
+seur_tmp <- as.Seurat(scdata)
+Idents(seur_tmp) <- seur_tmp$cond
+pathway <- "GOBP_CELL_REDOX_HOMEOSTASIS"
+gseaout <- gseaout_neut_GOBP
+genes_choice <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+a <- VlnPlot(seur_tmp, features=genes_choice, stack = TRUE, flip=T, cols = c("grey","dark red"), fill.by='ident') + theme(legend.position = "none") + ggtitle(pathway)
+a
+ggsave(a, filename = paste0(here::here("pics/"),"apollo_leading_edge_genes_by_cond_for_",pathway,"_compressed_.pdf"), height=length(genes_choice)*0.5, width=2.5)
+```
+
+Some select dot plots
+```{r}
+# dot plots of all the genes the pathway
+library(ktplots)
+gseaout <- gseaout_neut_GOBP
+scdata <- neuts[,neuts$Annotation=="Neutrophils"]
+
+pathway="GO_RESPONSE_TO_TYPE_I_INTERFERON"
+genes <- unique(pull(term2gene_GOBP[term2gene_GOBP$gs_name==pathway,],"gene_symbol"))
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_",pathway,".pdf"), width=5, height=5)
+
+# APOLLO:
+# Here, too many genes to show whole list: show leading edge genes
+pathway="GO_ACTIN_FILAMENT_BASED_PROCESS"
+genes <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_",pathway,".pdf"), width=5, height=5)
+
+pathway="GO_REGULATION_OF_ANATOMICAL_STRUCTURE_SIZE"
+genes <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_",pathway,".pdf"), width=5, height=5)
+
+pathway="GO_CELL_REDOX_HOMEOSTASIS"
+genes <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_",pathway,".pdf"), width=5, height=3)
+
+pathway="GO_DETOXIFICATION"
+genes <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_",pathway,".pdf"), width=5, height=3)
+
+# Bespoke list
+genes <- c("Ccl5","Ccl6","Ccl4","Ccl3","Ccrl2","Ccr1","Cxcr2","Cxcl2")
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_bespoke_",".pdf"), width=4, height=2.5)
+
+pathway="GO_REGULATION_OF_CELLULAR_COMPONENT_SIZE"
+genes <- str_split(gseaout@result[gseaout@result$Description==pathway,"core_enrichment"], "/")[[1]]
+p <- geneDotPlot(scdata = scdata, idents = "Subcluster", genes = genes, split.by = 'cond', scale=TRUE, save.plot = FALSE, pct.threshold = 0.05, heat_cols = rev(viridis::magma(50)),
+keepLevels = T) 
+p
+ggsave(p, filename = paste0(here::here("pics/"),"apollo_neut_dotplot_",pathway,".pdf"), width=4.5, height=4.3)
+
+```

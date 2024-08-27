@@ -1,0 +1,365 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+View DE results for neutrophils and the neutrophil subclusters
+```{r}
+setwd("/Users/mary/non_dropbox/exps/exp042_meninges_stress_dropseq/")
+library(ggplot2)
+library(kableExtra) 
+library(RColorBrewer)
+library(here)
+library(scran) 
+library(scater)
+library(magrittr)
+library(Seurat)
+```
+
+```{r}
+load(file=here::here("res/neut_clusters_DE.RData"))
+```
+
+View significance of results for cytokines and make plot
+```{r}
+# Used KEGG pathway
+# mmu04060 = Cytokine-cytokine receptor interaction - Mus musculus (house mouse)
+# https://www.genome.jp/dbget-bin/www_bget?path:mmu04060
+
+# Get KEGG list
+#BiocManager::install("EnrichmentBrowser")
+library("KEGGREST")
+library("EnrichmentBrowser")
+sar <- getGenesets(org = "mmu", db = "kegg", cache = TRUE, return.type="list")
+kegg_cc <- sar$`mmu04060_Cytokine-cytokine_receptor_interaction`
+library(biomaRt)
+ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+gene_info <- getBM(attributes = c("entrezgene_id", "mgi_symbol"), filters = "entrezgene_id", values = kegg_cc, mart = ensembl)
+
+features=rowData(neuts)$external_gene_name[rowData(neuts)$external_gene_name %in% gene_info$mgi_symbol]
+length(kegg_cc) # 294 in kegg list
+length(features) # 145 detectable in single cell dataset
+print(features)
+out_neut %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+
+out_A %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+out_B %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+out_C %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+out_D %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+out_E %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+out_F %>% as.data.frame() %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05)
+
+DotPlot(seur_neut, features=features, group.by="Subcluster") + xlab("") + ylab("")
+ggsave(here::here("pics/kegg_cytokine_neut_genes_by_cluster.pdf"), width=18, height=3.8)
+
+```
+
+APOLLO plot significant KEGG cytokine signalling results across neutrophil clusters
+```{r}
+
+tops <- out_neut %>% dplyr::filter(gene %in% features) %>% dplyr::filter(fdr_p_val < 0.05) %>% dplyr::arrange(LFC)
+print(tops)
+
+library(ktplots)
+geneDotPlot(scdata = seur_neut, # object 
+	idents = "Subcluster", 
+	genes = tops$gene, 
+	split.by = "cond", 
+	heat_cols = rev(viridis::magma(50)),
+	keepLevels = T,
+	save.plot = FALSE) 
+ggsave(here::here("pics/Neut_sig_KEGG_cytokine_genes_by_neut_cluster_by_cond.pdf"), width=4, height=3.6)
+
+```
+
+View Ifitm2 and Ifitm3 in monocytes and neutrophils
+```{r}
+
+# Rename clusters with correct myeloid names
+seur$Annotation %<>% as.character
+seur$Annotation[seur$Annotation=="Monocytes NOS"] <- "Monocytes"
+seur$Annotation[seur$Annotation=="Monocytes Ly6Chi"] <- "Myeloid_progenitors"
+seur$Annotation %<>% as.factor()
+
+# APOLLO
+VlnPlot(seur[,seur$Annotation %in% c("Neutrophils","Monocytes")], features=c("Ifitm2","Ifitm3"), group.by="Annotation", split.by="cond", pt.size=0, cols =  c("light grey","red")) + xlab("")
+ggsave(here::here("pics/Neut_mono_ifitm2_ifitm3_cond.pdf"), width=4, height=3)
+
+# And the stats (NB. Monocytes is Monocytes NOS)
+tops <- out %>% dplyr::filter(cluster %in% c("Neutrophils","Monocytes NOS")) %>% dplyr::filter(gene %in% c("Ifitm2","Ifitm3")) %>% dplyr::arrange(LFC)
+print(tops)
+
+# And the stats for what is sig across all clusters - only neuts
+tops <- out %>% dplyr::filter(gene %in% c("Ifitm2","Ifitm3")) %>% dplyr::filter(fdr_p_val<0.05) %>% dplyr::arrange(LFC)
+print(tops)
+
+```
+
+```{r}
+library(EnhancedVolcano)
+
+choice <- out_neut
+subtitle <- "Neutrophils (pooled)"
+pLabellingFDRCutoff <- 0.001
+FCcutoff <- 0.5
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'p_val',
+    xlim = c(-1.05, 1.05),
+    ylim = c(0, max(-log10(choice[,"p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 8,
+    ylab=bquote(~-Log[10]~italic(P)),
+    legendLabels = c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+    drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for FDR p<",pLabellingFDRCutoff, " and FC>",FCcutoff),
+    )
+
+ggsave(filename = here("pics/de_volcano_neut_squat.pdf"), width=13, height=8)
+```
+
+Preneutrophils
+```{r}
+
+choice <- out_preneut
+subtitle <- "Preeutrophils"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-1.5, 1.5),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    #pLabellingCutoff = pLabellingCutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legendLabels =c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+
+ggsave(filename = here("pics/de_volcano_preneut.pdf"), width=11, height=11)
+
+```
+
+Neutrophil clusters separately
+```{r}
+
+# CLUSTER A
+choice <- out_A
+subtitle <- "Neutrophils, cluster A"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-8, 8),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+ggsave(filename = here("pics/de_volcano_neut_A.pdf"), width=11, height=11)
+
+
+# CLUSTER B
+choice <- out_B
+subtitle <- "Neutrophils, cluster B"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-8, 8),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+ggsave(filename = here("pics/de_volcano_neut_B.pdf"), width=11, height=11)
+
+
+# CLUSTER C
+choice <- out_C
+subtitle <- "Neutrophils, cluster C"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-8, 8),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+ggsave(filename = here("pics/de_volcano_neut_C.pdf"), width=11, height=11)
+
+# CLUSTER D
+choice <- out_D
+subtitle <- "Neutrophils, cluster D"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-8, 8),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+ggsave(filename = here("pics/de_volcano_neut_D.pdf"), width=11, height=11)
+
+
+# CLUSTER E
+choice <- out_E
+subtitle <- "Neutrophils, cluster E"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-8, 8),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+ggsave(filename = here("pics/de_volcano_neut_E.pdf"), width=11, height=11)
+
+# CLUSTER F
+choice <- out_F
+subtitle <- "Neutrophils, cluster F"
+pLabellingCutoff <-  0.001
+FCcutoff <- 0.2
+EnhancedVolcano(choice,
+    lab = choice$gene,
+    x = 'LFC',
+    y = 'fdr_p_val',
+    #xlim = c(-8, 8),
+    ylim = c(0, max(-log10(choice[,"fdr_p_val"]), na.rm=TRUE) + 0.5),
+    title = 'Homecage versus stress',
+    pCutoff = pLabellingFDRCutoff,
+    pCutoffCol = "fdr_p_val",
+    FCcutoff = FCcutoff,
+    pointSize = 1.5,
+    labSize = 4.0,
+    ylab=bquote(~-Log[10]~adjusted~italic(P)),
+    legend=c('NS','Log2 FC','Adjusted p-value',
+      'Adjusted p-value & Log2 FC'),
+        drawConnectors = TRUE,
+    widthConnectors = 0.2,
+    colConnectors = 'grey30',
+    endsConnectors = 'last',
+    subtitle = paste0(subtitle,": labels shown for p<",pLabellingCutoff, " and FC>",FCcutoff),
+    )
+ggsave(filename = here("pics/de_volcano_neut_F.pdf"), width=11, height=11)
+
+
+```
+
+Top 20 genes for neutrophils with FC>0.1. Show in each cluster
+```{r}
+tops <- out_neut %>% dplyr::filter(abs(LFC)>0.1) %>% dplyr::arrange(p_val) %>% head(30) %>% dplyr::arrange(LFC)
+print(tops)
+
+library(ktplots)
+geneDotPlot(scdata = seur_neut, # object 
+	idents = "Subcluster", 
+	genes = tops$gene, 
+	split.by = "cond", 
+	heat_cols = rev(viridis::magma(50)),
+	keepLevels = T,
+	save.plot = FALSE) 
+ggsave(here::here("pics/Neut_top_DE_genes_by_neut_cluster_by_cond.pdf"), width=8, height=6)
+
+VlnPlot(seur_neut, features=c("Wfdc17","Tmsb4x","Lcn2","Cst3","H2-Ab1","Il1b"), split.by = "cond", pt.size = 0, cols =  c("light grey","red"), ncol=3) + xlab("")
+ggsave(here::here("pics/Neut_selected_genes_by_cond.pdf"), width=10, height=9)
+
+```
+

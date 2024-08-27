@@ -1,0 +1,86 @@
+---
+title: "exp042_neutrophils_trajectory"
+output: html_document
+date: "2023-03-30"
+---
+
+Code for pseudotime analysis
+
+```{r}
+
+setwd("/Users/mary/non_dropbox/exps/exp042_meninges_stress_dropseq/")
+library(ggplot2)
+library(tidyverse)
+library(magrittr)
+library(here)
+
+# Load sce object
+load(here("res/processed.RData"))
+
+```
+
+```{r}
+neuts <- sce[,sce$Annotation %in% c("Preneutrophils","Neutrophils")]
+```
+
+From OSCA, use TSCAN to make minimum spanning tree between subclusters
+```{r}
+library(scater)
+by.cluster <- aggregateAcrossCells(neuts, ids=neuts$Subcluster)
+centroids <- reducedDim(by.cluster, "MNN") # MNN is the 50 components of MNN-corrected PCA
+
+# Set clusters=NULL as we have already aggregated above.
+library(TSCAN)
+mst <- createClusterMST(centroids, clusters=NULL)
+mst
+
+line.data <- reportEdges(by.cluster, mst=mst, clusters=NULL, use.dimred="UMAP")
+
+p <- plotUMAP(neuts, colour_by="Subcluster") + 
+    geom_line(data=line.data, mapping=aes(x=UMAP_1, y=UMAP_2, group=edge))
+p
+
+# Extract these plot colours for use in further plots:
+g <- ggplot_build(p)
+unique(g$data[[1]]["colour"])
+# Then manually reordered from preneut --> F
+subcluster_cols <- c("#729ECE","#FF9E4A","#67BF5C","#ED665D","#AD8BC9","#A8786E","#ED97CA")
+
+map.tscan <- mapCellsToEdges(neuts, mst=mst, use.dimred="MNN", clusters=neuts$Subcluster)
+tscan.pseudo <- orderCells(map.tscan, mst)
+head(tscan.pseudo)
+
+# Examine pseudotime ordering
+common.pseudo <- averagePseudotime(tscan.pseudo) 
+plotUMAP(neuts, colour_by=I(common.pseudo), 
+        text_by="Subcluster", text_colour="red") +
+    geom_line(data=line.data, mapping=aes(x=UMAP_1, y=UMAP_2, group=edge))
+ggsave(here("pics/pseudotime_TSCAN_umap.pdf"), width=4, height=4)
+
+# Now test for genes significantly associated with pseudotime. Batch is called "group"
+pseudo <- testPseudotime(neuts, pseudotime=tscan.pseudo[,1], block=neuts$group)[[1]]
+pseudo$SYMBOL <- rowData(neuts)$SYMBOL
+sorted <- pseudo[order(pseudo$p.value),]
+
+# Add pseudotime info to sce
+neuts$TSCAN <- pathStat(tscan.pseudo)[,1]
+
+downreg <- sorted[sorted$logFC < 0,]
+head(downreg, 10)
+upreg <- sorted[sorted$logFC > 0,]
+head(upreg, 10)
+
+# APOLLO: plot features (genes) significantly associated with pseudotime
+plotExpression(neuts, features=head(rownames(upreg), 10), x="TSCAN", colour_by="Subcluster")
+ggsave(here("pics/pseudotime_TSCAN_upreg.pdf"), width=4, height=6)
+
+plotExpression(neuts, features=head(rownames(downreg), 10), x="TSCAN", colour_by="Subcluster")
+ggsave(here("pics/pseudotime_TSCAN_downreg.pdf"), width=4, height=6)
+
+```
+
+```{r}
+
+sessionInfo()
+
+```

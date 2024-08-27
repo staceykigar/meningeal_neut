@@ -1,0 +1,507 @@
+---
+title: "de view"
+output: html_document
+---
+
+Code to view marker genes, gene modules, cell cycle scores, and differential expression results
+
+```{r}
+setwd("/Users/mary/non_dropbox/exps/exp042_meninges_stress_dropseq/")
+library(ggplot2)
+library(kableExtra) 
+library(RColorBrewer)
+library(here)
+library(scran) 
+library(scater)
+library(magrittr)
+
+```
+
+Functions
+```{r}
+
+lynall_dimred <- function(layout, color_by, size=0.5, label="Label", colchoice=c("light grey","red")){
+    scramble <- sample(1:nrow(layout), nrow(layout))
+    p <- ggplot(data.frame("Dim1" = layout[scramble, 1], "Dim2" = layout[scramble, 2], "forcol" = color_by[scramble]),
+    aes(x = Dim1, y = Dim2, col = forcol)) + geom_point(pch=19, cex=size) +
+    theme_classic() + coord_equal() + xlab(colnames(layout)[1]) + ylab(colnames(layout)[2]) + scale_color_manual(values = colchoice, name=label)
+    return(p)
+}
+
+wilcox_lynall_filter <- function(sce, cluster_choice, cond1="HC", cond2="SD", filter=FALSE, perc_thresh = 0.1, log2norm_thresh=0, renormalize=TRUE, cluster_slot = "Annotation"){
+    tmp <- sce[,colData(sce)[,cluster_slot]==cluster_choice]
+    
+    if (isTRUE(renormalize)){
+        head(sizeFactors(tmp))
+        sizeFactors(tmp) <- NULL
+        print("Renormalizing data")
+        sizeFactors(tmp) <- calculateSumFactors(tmp, min.mean = 0.1) 
+        tmp <- logNormCounts(tmp) 
+        head(sizeFactors(tmp))
+    }
+
+    # log fold change
+    global.av <- Matrix::rowMeans(logcounts(tmp))
+    cond1.mean <- Matrix::rowMeans(logcounts(tmp)[, tmp$cond %in% cond1])
+    cond2.mean <- Matrix::rowMeans(logcounts(tmp)[, tmp$cond %in% cond2])
+    cond1.perc <- 100*Matrix::rowSums(logcounts(tmp)[, tmp$cond %in% cond1] > 0)/ncol(tmp[, tmp$cond %in% cond1]) # Percentage of cells in that group expressing
+    cond2.perc <- 100*Matrix::rowSums(logcounts(tmp)[, tmp$cond %in% cond2] > 0)/ncol(tmp[, tmp$cond %in% cond2])
+    lfc = cond2.mean - cond1.mean # I.e. LFC tells you what is higher in cond2
+    
+    if (filter==TRUE){
+        keep <- Matrix::rowSums(logcounts(tmp)>log2norm_thresh) > perc_thresh*ncol(logcounts(tmp))
+        forstats <- tmp[keep == TRUE, ]
+    } else {
+        unexpressed <- Matrix::rowSums(exprs(tmp)) == 0 
+        forstats <- tmp[unexpressed == FALSE, ]
+    }
+    
+    print(sprintf("%d cells in cluster %s. Testing differential expression in %d of %d genes.", ncol(tmp), cluster_choice, nrow(forstats), nrow(tmp)))
+    # wilcox test between conditions
+    w.out <-  unlist(lapply(rownames(forstats), function(x){
+        wilcox.test(logcounts(forstats)[x, ]~forstats$cond)$p.value
+    }))
+    fdr = p.adjust(w.out, method='BH')
+    
+    stats <- data.frame("gene" = as.character(rownames(forstats)), "wilcoxed"=TRUE, "p_val" = w.out, "fdr_p_val" = fdr, stringsAsFactors=FALSE)
+    # assemble and return
+    df <- data.frame("cluster" = cluster_choice, "gene" = as.character(rownames(tmp)), "global_average" = global.av, "mean_cond1" = cond1.mean, "mean_cond2" = cond2.mean, "perc_cond1" = cond1.perc, "perc_cond2" = cond2.perc, "LFC" = lfc, "absLFC" = abs(lfc), stringsAsFactors=FALSE)
+    df <- dplyr::left_join(df, stats, by="gene")
+    colnames(df)[colnames(df)=="mean_cond1"] <- paste0("mean_",cond1)
+    colnames(df)[colnames(df)=="mean_cond2"] <- paste0("mean_",cond2)
+    colnames(df)[colnames(df)=="perc_cond1"] <- paste0("perc_",cond1)
+    colnames(df)[colnames(df)=="perc_cond2"] <- paste0("perc_",cond2)
+    df <- df[order(df$fdr_p_val, decreasing = FALSE), ]
+    return(df)
+}
+
+
+```
+
+```{r}
+
+# Load differential expression results
+load(file = paste0(here::here("res/"),"sc_deout_leiden_0_perc0.15.R"))
+
+# Load sce object
+combi <- readRDS(paste0(here::here("res/"),"combi_clustered_leiden_annotated.RDS"))
+
+# Note these are also loaded with the above
+# log2norm_thresh <- 0
+# perc_thresh <- 0.15
+
+# Get all differential expression results
+out <- dplyr::bind_rows(deout)
+
+```
+
+Drop ambient genes and erythrocytes; correct monocyte annotations
+```{r}
+load(file=here::here("res/amb_to_drop.R"))
+sce <- combi[!rowData(combi)$ID %in% amb_to_drop,]
+sce <- sce[,!sce$Annotation == "Erythrocytes"]
+
+# Update monocyte annotations
+library(forcats)
+sce$Annotation <- fct_recode(sce$Annotation, "Myeloid precursors"="Monocytes Ly6Chi", Monocytes="Monocytes NOS")
+
+```
+
+Annotations
+```{r}
+neuts <- sce[,sce$Annotation %in% c("Preneutrophils","Neutrophils")]
+
+library(Seurat)
+seur_neut <- as.Seurat(neuts)
+Idents(seur_neut) <- neuts$Cluster
+
+sce$Subcluster <- "Nonneut"
+sce$Subcluster[sce$Cluster=="1"] <- "F"
+sce$Subcluster[sce$Cluster=="2"] <- "E"
+sce$Subcluster[sce$Cluster=="3"] <- "B"
+sce$Subcluster[sce$Cluster=="6"] <- "D"
+sce$Subcluster[sce$Cluster=="7"] <- "C"
+sce$Subcluster[sce$Cluster=="8"] <- "A"
+sce$Subcluster[sce$Cluster=="17"] <- "Preneutrophils"
+
+sce$Subcluster <- factor(sce$Subcluster, levels=c("Nonneut","Preneutrophils","A","B","C","D","E","F"))
+
+neuts <- sce[,sce$Annotation %in% c("Preneutrophils","Neutrophils")]
+
+subcluster_cols <- c("#729ECE","#FF9E4A","#67BF5C","#ED665D","#AD8BC9","#A8786E","#ED97CA")
+```
+
+```{r}
+# Save object for upload to Zenodo
+save(sce, file = here("res/processed.RData"))
+```
+
+```{r}
+
+# APOLLO
+seur_neut <- as.Seurat(neuts)
+Idents(seur_neut) <- neuts$Subcluster
+DimPlot(seur_neut, label=TRUE, repel=TRUE, reduction="UMAP", cols = subcluster_cols)
+ggsave(here::here("pics/Apollo_neut_clusters.pdf"), width=6, height=5)
+
+DimPlot(seur_neut, label=TRUE, repel=TRUE, reduction="TSNE", cols = metadata(neuts)$col_vector)
+ggsave(here::here("pics/Neut_clusters_TSNE.pdf"), width=9, height=9)
+
+DimPlot(seur_neut, label=TRUE, repel=TRUE, reduction="TSNE", cols = c("light grey","red"), group.by = "cond")
+ggsave(here::here("pics/Neut_clusters_TSNE_by_cond.pdf"), width=9, height=9)
+
+```
+
+
+CXCL1, CXCL2 and CXCL12 in the single cell dataset
+```{r}
+seur <- as.Seurat(sce)
+Idents(seur) <- seur$Annotation
+
+VlnPlot(seur, features=c("Cxcl1","Cxcl2","Cxcl12"), split.by = "cond", ncol = 3, pt.size = 0) + RestoreLegend() 
+ggsave(here::here("pics/sce_neut_chemokines.pdf"), width=16, height=8)
+
+```
+
+TSNEs
+```{r}
+# HC and CSD
+lynall_dimred(reducedDim(sce,"TSNE"), color_by = sce$cond, label="Experiment")
+ggsave(here::here("pics/All_clusters_TSNE_by_cond.pdf"), width=7, height=7)
+
+lynall_dimred(reducedDim(sce,"UMAP"), color_by = sce$cond, label="Experiment")
+ggsave(here::here("pics/All_clusters_UMAP_by_cond.pdf"), width=7, height=7)
+
+DimPlot(seur, label=F, repel=TRUE, reduction="TSNE", cols = metadata(sce)$col_vector) + coord_equal()
+ggsave(here::here("pics/All_clusters_TSNE.pdf"), width=9.5, height=7)
+```
+
+UMAP
+```{r}
+DimPlot(seur, label=F, repel=TRUE, reduction="UMAP", cols = metadata(sce)$col_vector) + coord_equal()
+ggsave(here::here("pics/All_clusters_UMAP.pdf"), width=10, height=7)
+
+```
+
+APOLLO: Plot of cell cycle on UMAP
+```{r}
+library(RColorBrewer)
+display.brewer.all(colorblindFriendly = T)
+
+table(seur$cell_cycle, useNA="always") 
+
+seur$cell_cycle <- factor(seur$cell_cycle, levels=c("G1","G2M","S"))
+Idents(seur) <- seur$cell_cycle
+DimPlot(seur[,!is.na(seur$cell_cycle)], label=F, repel=TRUE, reduction="UMAP", cols = brewer.pal(7,"Dark2")[c(6,4,3)]) + coord_equal()
+ggsave(here::here("pics/All_clusters_UMAP_cell_cycle.pdf"), width=10, height=7)
+
+# Neutrophil only version
+seur_neut$cell_cycle <- factor(seur_neut$cell_cycle, levels=c("G1","G2M","S"))
+Idents(seur_neut) <- seur_neut$cell_cycle
+DimPlot(seur_neut, label=F, repel=TRUE, reduction="UMAP", cols = brewer.pal(7,"Dark2")[c(6,4,3)], pt.size=0.1) + coord_equal()
+ggsave(here::here("pics/Neuts_UMAP_cell_cycle.pdf"), width=6.5, height=3)
+
+```
+
+APOLLO: Key interferon genes on the UMAP
+```{r}
+
+grep("Ifn",rownames(sce), value=T)
+
+library(viridis)
+scater::plotUMAP(sce, colour_by="Ifitm2", point_size=0.01) + facet_grid(~sce$cond)
+ggsave(here::here("pics/All_clusters_UMAP_ifitm2.pdf"), width=6.5, height=3)
+
+plotUMAP(sce, colour_by="Ifitm3", point_size=0.01) + facet_grid(~sce$cond)
+ggsave(here::here("pics/All_clusters_UMAP_ifitm3.pdf"), width=6.5, height=3)
+
+plotUMAP(sce, colour_by="Ifnar1", point_size=0.01) + facet_grid(~sce$cond)
+ggsave(here::here("pics/All_clusters_UMAP_ifnar1.pdf"), width=6.5, height=3)
+
+plotUMAP(sce, colour_by="Ifnar2", point_size=0.01) + facet_grid(~sce$cond)
+ggsave(here::here("pics/All_clusters_UMAP_ifnar2.pdf"), width=6.5, height=3)
+
+scater::plotUMAP(sce, colour_by="Cxcr2", point_size=0.01) + facet_grid(~sce$cond)
+ggsave(here::here("pics/All_clusters_UMAP_cxcr2.pdf"), width=6.5, height=3)
+
+plotUMAP(sce, colour_by="Ifng", point_size=0.01) + facet_grid(~sce$cond)
+ggsave(here::here("pics/All_clusters_UMAP_ifng.pdf"), width=6.5, height=3)
+
+
+# AND NEUT ONLY VERSIONS
+scater::plotUMAP(neuts, colour_by="Ifitm2", point_size=0.7) + scale_colour_viridis_c(option="magma", direction=-1) + facet_grid(~neuts$cond)
+ggsave(here::here("pics/Neuts_UMAP_ifitm2.pdf"), width=6.5, height=3)
+scater::plotUMAP(neuts, colour_by="Ifitm3", point_size=0.7) + scale_colour_viridis_c(option="magma", direction=-1)+ facet_grid(~neuts$cond)
+ggsave(here::here("pics/Neuts_UMAP_ifitm3.pdf"), width=6.5, height=3)
+plotUMAP(neuts, colour_by="Ifnar1", point_size=0.7) + facet_grid(~neuts$cond)
+ggsave(here::here("pics/Neuts_UMAP_ifnar1.pdf"), width=6.5, height=3)
+plotUMAP(neuts, colour_by="Ifnar2", point_size=0.7) + facet_grid(~neuts$cond)
+ggsave(here::here("pics/Neuts_UMAP_ifnar2.pdf"), width=6.5, height=3)
+plotUMAP(neuts, colour_by="Cxcr2", point_size=0.7) + facet_grid(~neuts$cond)
+ggsave(here::here("pics/Neuts_UMAP_cxcr2.pdf"), width=6.5, height=3)
+
+```
+
+APOLLO: UMAP for the 6 neut clusters + preneuts
+```{r}
+
+Idents(seur_neut) <- neuts$Subcluster
+DimPlot(seur_neut, label=F, repel=TRUE, reduction="UMAP", cols = subcluster_cols, pt.size=0.1) + coord_equal()
+ggsave(here::here("pics/Neut_clusters.pdf"), width=6.5, height=3)
+
+
+```
+
+What proportions in each for HC vs. SD?
+```{r}
+# Percent of neuts and preneuts.
+table(neuts$Subcluster, neuts$cond) %>% prop.table(margin=2) %>% "*"(100) %>% round(1) %>% kable(row.names = T) %>% kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+# Percent of all single cells. 
+table(sce$Subcluster, sce$cond) %>% prop.table(margin=2) %>% .[c("Preneutrophils","A","B","C","D","E","F"),] %>% "*"(100) %>% round(1) %>% kable(row.names = T) %>% kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+```
+
+Gene lists
+```{r}
+
+# Ribosomal genes
+riboprot <- sort(grep("^Rp[sl][[:alnum:]]",rowData(sce)$Symbol, value = TRUE))
+
+# Histones
+histones <- sort(grep("Hist",rownames(sce), value=T))
+print(histones) # Mianly Hist1 linkers
+
+# Granule genes from https://www.cell.com/immunity/pdf/S1074-7613(18)30038-4.pdf Evrard
+gran_prim <- c("Hexa","Prss57","Prtn3","Ctsg","Mpo","Elane","Ctsc","Hexb")
+gran_sec <- c("Stom","Ltf","Camp","Cybb","Ceacam1","Lcn2","Lyz2","Olfm4","Lyz1","Hp") 
+gran_ter <- c("Mmp25","Itgam","Mmp8","Mmp9","Cfp","Adam8","Slc11a1")
+
+# Generate module scores (this subtracts control expression, so is effectively normalized for cell quality and complexity)
+seur_neut <- AddModuleScore(seur_neut, features=list(riboprot), name=c("Ribosomal"))
+seur_neut <- AddModuleScore(seur_neut, features=list(gran_prim), name=c("Primary_granules"))
+seur_neut <- AddModuleScore(seur_neut, features=list(gran_sec), name=c("Secondary_granules"))
+seur_neut <- AddModuleScore(seur_neut, features=list(gran_ter), name=c("Tertiary_granules"))
+seur_neut <- AddModuleScore(seur_neut, features=list(histones), name=c("Histones"))
+
+# For ribosomes and histones, also want to see for all cells
+Idents(seur) <- seur$Annotation
+seur <- AddModuleScore(seur, features=list(riboprot, histones), name=c("Ribosomal","Histones"))
+
+```
+
+```{r}
+
+# Look at module scores by cluster
+VlnPlot(seur_neut, features=c("Ribosomal1","Primary_granules1","Secondary_granules1","Tertiary_granules1","Histones1","pct_counts_Mito"), split.by = "cond", ncol = 3, pt.size = 0, cols=subcluster_cols) + RestoreLegend()
+ggsave(here::here("pics/Neut_cluster_summary_ribo_mito_granule.pdf"), width=12, height=10)
+
+# APOLLO: Using this one, not split by condition
+VlnPlot(seur_neut, features=c("Ribosomal1","Primary_granules1","Secondary_granules1","Tertiary_granules1"), ncol = 2, pt.size = 0, cols=subcluster_cols) #+ RestoreLegend() 
+ggsave(here::here("pics/Apollo_neut_cluster_summary_ribo_mito_granule.pdf"), width=8, height=10)
+
+# APOLLO: Mitochondrial %
+Idents(seur) <- seur$Annotation
+VlnPlot(seur[,seur$Annotation %in% c("Preneutrophils","Neutrophils")], features=c("pct_counts_Mito"), split.by = "cond", ncol = 1, pt.size = 0) + RestoreLegend()
+
+df <- seur[,seur$Annotation %in% c("Preneutrophils","Neutrophils")]
+forplot <- data.frame(condition=df$cond, cluster=df$Annotation, percent_mito=df$pct_counts_Mito)
+library(ggsignif)
+ggplot(forplot, aes(x=condition, y=percent_mito)) + xlab("") + ylab("% of total") + 
+    ggtitle("Mitochondrial counts") + geom_violin(fill="white", adjust=2) + geom_boxplot(aes(fill=condition),outlier.shape=NA, notch=FALSE, width=0.2) + scale_fill_manual(values=c("light grey","dark red")) + expand_limits(y=c(0, 8)) + guides(fill=FALSE) + theme_bw() + facet_grid(~cluster)
+ggsave(here::here("pics/apollo_neuts_mito.pdf"), width=4, height=4.5)
+wilcox.test(data=forplot[forplot$cluster=="Neutrophils",], percent_mito~condition)
+wilcox.test(data=forplot[forplot$cluster=="Preneutrophils",], percent_mito~condition)
+
+# And ribosomes and histones for all cells. Interesting: the ribosomal change is most marked for neutrophils.
+VlnPlot(seur, features=c("Ribosomal1","Histones2","pct_counts_Mito"), split.by = "cond", ncol = 3, pt.size = 0, ) + RestoreLegend()
+ggsave(here::here("pics/All_clusters_summary_ribo_mito.pdf"), width=19, height=6)
+
+# nice transition from secondary granule to tertiary granule genes Ribosomal proteins mainly in subset of preneutrophils. No clear HC vs. SD difference.
+
+# Reverse order of groups to correct for visualisation
+DotPlot(seur_neut, features=c(gran_ter, gran_sec, gran_prim), group.by="Subcluster") + xlab("") + ylab("")
+ggsave(here::here("pics/Neut_granule_genes_by_cluster.pdf"), width=16, height=3.8)
+
+```
+
+How do our clusters relate to the murine cardiac clusters from BiorXiv paper?
+```{r}
+# Cluster 1
+cardiac <- NULL
+cardiac$late_1a <- c("Tnf","Il23a","Dusp2","Gpr84","Icam1") # First day 3/5 post-MI cluster (high siglecf)
+# Cluster 2
+cardiac$late_2 <- c("Slpi","Ifitm1","Lrg1","Vps37b","Asprv1") # Third day 3/5 post-MI high cluster (but also present at baseline)
+# Cluster 3
+cardiac$late_1b <- c("Cox7a2","Snrpe","Rps18","Siglecf","Hist1h1c") # Cluster 3 = Second day 3/5 post-MI cluster (also high siglecf), similar to cluster 1. 
+# Cluster 4
+cardiac$early <- c("Ccl6","Lcn2","Cxcl3","Wfdc21","Retnlg") # Day 1 post-MI cluster
+# Cluster 5
+cardiac$IFN <- c("Ifit1","Isg15","Rsad2","Ifit3","Cxcl10") # IFN cluster
+# Cluster 6
+cardiac$minor <- c("Slc26a11","Itpr2","Psap","Gdf15","Creg1") # Very minor cluster
+
+DotPlot(seur_neut, features=unlist(cardiac), group.by="Subcluster") + xlab("") + ylab("")
+ggsave(here::here("pics/Cardiac_MI_neut_genes_by_cluster.pdf"), width=18, height=3.8)
+# The following requested variables were not found: Il23a, Ifitm1, Lrg1, Siglecf, Cxcl3, Slc26a11, Gdf15
+
+# Looks like: 
+# no late1a
+# no clear late 2 (potentially D-F)
+# no late1b (preneutrophils close, but F actually has the highest Hist1h1c)
+# no 'early'
+# nothing, actually, None seem to match well.
+
+grep("Siglec", rowData(sce)$external_gene_name, value=T) # Real shame there is no Siglecf!!
+grep("Cxcl", rowData(sce)$external_gene_name, value=T)
+
+```
+
+Cytokines and chemokines in the different clusters
+```{r}
+
+genes_informative_cyto_chemo <- c("Cxcl2","Cxcr2","Ccr1","Ccrl2","Ccl3","Ccl4","Ccl6","Ccl5")
+
+DotPlot(seur, features=genes_informative_cyto_chemo, group.by="Subcluster") + xlab("") + ylab("")
+ggsave(here::here("pics/Chemokines_and_receptors_by_neut_cluster.pdf"), width=7.5, height=3.4)
+
+library(ktplots)
+geneDotPlot(scdata = seur_neut, # object 
+	idents = "Subcluster", 
+	genes = genes_informative_cyto_chemo, 
+	split.by = "cond", 
+	heat_cols = rev(viridis::magma(50)),
+	keepLevels = T,
+	save.plot = FALSE) 
+
+ggsave(here::here("pics/Chemokines_and_receptors_by_neut_cluster_by_cond.pdf"), width=7.5, height=3.4)
+
+```
+
+
+MARKERS (by Seurat) for each cluster
+```{r}
+
+all.markers <- FindAllMarkers(object = seur_neut)
+top10 <- all.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC) 
+
+# Need to scale for heatmap
+seur_neut <- ScaleData(seur_neut)
+p <- DoHeatmap(seur_neut, features = top10$gene) + NoLegend()
+ggsave(plot=p, here::here("pics/Neut_clusters_top10_seurat_markers.eps"), width=9, height=12)
+```
+
+
+Ribosomal genes
+```{r}
+
+# Ribosomal genes decreased throughout the neutrophil differentiation path. 
+geneDotPlot(scdata = seur_neut, # object 
+	idents = "Subcluster", # column name in meta data that holds the cell-cluster ID/assignment
+	genes = riboprot, # genes to plot
+	split.by = "cond", # column name in the meta data that you want to split the plotting by. If not provided, it will just plot according to idents
+	save.plot = FALSE) # If TRUE, it will save to a location that you can specify via filepath and filename
+
+```
+
+APOLLO: Stacked bar for neut subclusters
+```{r}
+
+tmp <- neuts
+
+propping <- table(tmp$cond, droplevels(tmp$Subcluster)) %>% 
+  prop.table(margin=c(1)) %>% 
+  reshape2::melt()
+colnames(propping) <- c("Condition","Cell_type","proportion")
+
+p_props <- ggplot(data=propping) + 
+    geom_bar(aes(x=Condition, y=proportion, fill=Cell_type), stat="identity") + 
+    xlab("") + ylab("") +# + theme(axis.text.x=element_text(angle=90,hjust=1, vjust=0.5))
+    ggtitle("Cell type proportions") + 
+    scale_fill_manual(values=subcluster_cols) + theme_bw() +
+  theme(legend.title = element_blank()) 
+p_props
+ggsave(p_props, filename = paste(here("pics"),"apollo_cell_type_proportions_neutrophils.pdf",sep="/"),width=3,height=3)
+
+# Now statistics
+df <- table(tmp$cond, droplevels(tmp$Subcluster))
+print(df)
+chi.result <- chisq.test(df)
+print(chi.result) # Not sig 
+#data:  df
+#X-squared = 0.017192, df = 6, p-value = 1
+
+```
+
+
+Proportion of cell cycle per cluster
+```{r}
+tmp <- neuts
+
+propping <- table(tmp$cond, tmp$cell_cycle,droplevels(tmp$Subcluster)) %>% 
+  prop.table(margin=c(1,3)) %>% 
+  reshape2::melt()
+colnames(propping) <- c("Condition","Cell_cycle_phase","Cell_type","proportion")
+
+p_props <- ggplot(data=propping) + 
+    geom_bar(aes(x=Condition, y=proportion, fill=Cell_cycle_phase), stat="identity") + 
+    xlab("") + ylab("") +
+    ggtitle("Cell cycle phase") + 
+    scale_fill_manual(values=metadata(sce)$col_vector) + theme_bw() +
+  theme(legend.title = element_blank()) + facet_wrap(~Cell_type, ncol=7)
+p_props
+ggsave(p_props, filename = paste(here("pics"),"apollo_cell_cycle_phase_neutrophils.pdf",sep="/"),width=9,height=2.3)
+
+```
+
+CXCL1 CXCL2
+```{r}
+library(Seurat)
+seur <- as.Seurat(sce)
+grep("Cxcl",rownames(sce), value=T)
+# Not worth showing Cxcl1 - almost no counts
+assay(sce["Cxcl1",]) %>% summary()
+
+p1 <- RidgePlot(seur[,seur$cond=="HC"], features=c("Cxcl2"), group.by="Annotation") + guides(fill=FALSE) + ggtitle(("CXCL2 in homecage"))
+p2 <- RidgePlot(seur[,seur$cond=="SD"], features=c("Cxcl2"), group.by="Annotation") + guides(fill=FALSE) + ggtitle(("CXCL2 in stress"))
+library(cowplot) 
+plot_grid(p1,p2)
+ggsave(path=here::here("pics/"), filename = "cxcl2_by_cluster_and_group.pdf", width=10, height=7)
+
+```
+
+Differential expression
+```{r}
+# NB. these functions renormalize the data within the cluster
+
+out_neut <- wilcox_lynall_filter(sce, cluster_choice="Neutrophils", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE)
+
+out_preneut <- wilcox_lynall_filter(sce, cluster_choice="Preneutrophils", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE)
+
+out_neut %>% dplyr::filter(fdr_p_val<0.005) 
+out_preneut %>% dplyr::filter(fdr_p_val<0.005) 
+
+# Subclusters
+out_A <- wilcox_lynall_filter(neuts, cluster_choice="A", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE, cluster_slot = "Subcluster") 
+
+out_B <- wilcox_lynall_filter(neuts, cluster_choice="B", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE, cluster_slot = "Subcluster")
+
+out_C <- wilcox_lynall_filter(neuts, cluster_choice="C", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE, cluster_slot = "Subcluster")
+
+out_D <- wilcox_lynall_filter(neuts, cluster_choice="D", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE, cluster_slot = "Subcluster")
+
+out_E <- wilcox_lynall_filter(neuts, cluster_choice="E", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE, cluster_slot = "Subcluster")
+
+out_F <- wilcox_lynall_filter(neuts, cluster_choice="F", cond1="HC", cond2="SD", filter=TRUE, perc_thresh = perc_thresh, log2norm_thresh=log2norm_thresh, renormalize=TRUE, cluster_slot = "Subcluster")
+
+save(list=c("neuts","seur_neut","out_neut","out_preneut","out_A","out_B","out_C","out_D","out_E","out_F"),file=here::here("res/neut_clusters_DE.RData"))
+
+```
+
+
+```{r}
+
+sessionInfo()
+
+```
+

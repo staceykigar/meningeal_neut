@@ -1,0 +1,299 @@
+---
+title: "kolabas"
+output: html_document
+date: "2024-12-10"
+---
+Author: Mary-Ellen Lynall 2024
+
+Dataset downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE192616 on 11/12/24
+
+Accompanying paper: https://pubmed.ncbi.nlm.nih.gov/37562402/ 
+
+In Kolabas 2023 there are scRNAseq data from meninges, brain, calvaria, other bones. 
+
+AIM: Test how similar the meninges neutrophils are to neutrophils from each of those locations.
+HYPOTHESIS: Our stress-associated neutrophils are most similar to Kolabas meninges and closer to Kolabas calvaria than to other bones in the Kolabas dataset.
+
+```{r}
+
+setwd("/Users/mary/non_dropbox/exps/exp042_meninges_stress_dropseq/")
+library(here)
+```
+
+
+```{r}
+
+# Processed data are in supplementary so download
+
+download_file_if_needed <- function(url, dest_path) {
+  decompressed_file <- sub("\\.gz$", "", dest_path)  # Remove the ".gz" extension
+  # Check if the unzipped file already exists
+  if (!file.exists(decompressed_file)) {
+    message("File not found at destination. Downloading...")
+    # Download the file
+    tryCatch({
+      download.file(url, dest_path, mode = "wb") # Use mode "wb" for binary files
+      R.utils::gunzip(dest_path, destname = decompressed_file, overwrite = TRUE)
+      message("Download and unzip completed successfully.")
+    }, error = function(e) {
+      message("An error occurred during download: ", e$message)
+    })
+  } else {
+    message("File already exists at destination. Skipping download.")
+  }
+}
+
+
+# Big file
+url <- "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE192nnn/GSE192616/suppl/GSE192616%5Fsc%5Fadata%5Foct22m%2Eh5ad%2Egz"
+dest_path <- "/Users/mary/Documents/research/exps/public/scrnaseq/kolabas2023/GSE192616_sc_adata_oct22m.h5ad.gz" # 1194 MB
+download_file_if_needed(url, dest_path)
+
+# Now read the decompressed file
+library(zellkonverter)
+adata <- zellkonverter::readH5AD(sub("\\.gz$", "", dest_path))
+
+```
+
+View
+```{r}
+
+library(tidyverse)
+library(SingleCellExperiment)
+library(tidySingleCellExperiment)
+
+# Drop raw data as very large
+assay(adata, "raw_counts") <- NULL
+
+# Check info. 32 samples, 8 tissues
+adata
+conditions <- adata %>% colData() %>% as_tibble() %>% select(sample_id, region, condition, cell_types) %>% unique()
+conditions$cell_types %>% unique() # There are "pro neutrophils" and "neutrophils" here
+conditions$region %>% unique() # Brain Femur Humerus Meninges Pelvis Scapula Skull Vertebra
+
+# Drop everyting except neuts 
+adata <- adata %>% filter(cell_types %in% c("neutrophils"))
+
+tmp <- adata %>% colData() %>% as_tibble() %>% select(sample_id, region, condition) %>% unique() 
+# View all conditions (for which we have neuts)
+# One sham, one naive and two MCAO for each condition
+tmp %>% arrange(region) %>% as.data.frame()
+
+```
+
+```{r}
+# get a summarized experiment
+adata$cellgroup <- paste(adata$sample_id, adata$region, adata$condition, adata$cell_types, sep="_")
+
+# These only have one neutrophil cell so drop otherwise aggregate_cells can't run
+adata[,adata$cellgroup %in% c("MUC12842_Brain_MCAO_neutrophils", "MUC12850_Brain_Naive_neutrophils")]
+
+if ("cellgroup" %in% colnames(colData(adata))) {
+  adata <- adata[, !(adata$cellgroup %in% c("MUC12842_Brain_MCAO_neutrophils","MUC12850_Brain_Naive_neutrophils"))]
+} else {
+  stop("The column 'cellgroup' does not exist in colData(adata).")
+}
+
+pseudo_bulk <- adata %>%
+  tidySingleCellExperiment::aggregate_cells(c(sample_id, region, condition, cell_types))
+
+# Check low cell numbers
+pseudo_bulk %>% colData %>% as_tibble() %>% arrange(.aggregated_cells)
+
+# Remove samples with <10 aggregated cells
+library(tidySummarizedExperiment)
+pseudo_bulk_filtered <- pseudo_bulk %>% filter(.aggregated_cells>=10)
+
+pseudo_bulk_filtered %>% as_tibble() %>% arrange(.aggregated_cells)
+
+```
+
+
+```{r}
+
+library(tidyr)
+library(dplyr)
+
+# Pivot data: rows = samples, columns = features, values = assay data (X)
+library(magrittr)
+df <- pseudo_bulk_filtered
+df$cell_types %<>% droplevels()
+df$condition %<>% droplevels()
+
+pca_matrix_full <- df %>%
+  as_tibble() %>%
+  select(.sample, .feature, X) %>%
+  pivot_wider(names_from = .feature, values_from = X)
+
+# Calculate the variance for each gene (column)
+gene_variances <- apply(pca_matrix_full[,-1], 2, var)
+
+# Take top 10% most variable
+threshold <- quantile(gene_variances, 0.9, na.rm=T)
+
+# Filter for highly variable genes
+highly_variable_genes <- names(gene_variances[gene_variances >= threshold])
+pca_matrix <- pca_matrix_full %>% select(all_of(c(".sample", highly_variable_genes)))
+
+# Remove the `.sample` column and convert to matrix
+pca_matrix_values <- pca_matrix %>%
+  select(-.sample) %>%
+  as.matrix()
+
+# Check rownames
+rownames(pca_matrix_values) <- pca_matrix$.sample
+
+# Perform PCA
+pca_result <- prcomp(pca_matrix_values, center = T, scale. = TRUE)
+
+# View the PCA result
+summary(pca_result)  # Check explained variance
+pca_result$x         # Principal component scores for each sample
+
+library(factoextra)
+fviz_pca_ind(pca_result, label="none", habillage = df$cell_types, addEllipses = T, ellipse.level=0.95) + scale_color_brewer(palette="Dark2")
+
+```
+
+Now just neuts and just sham/naive
+
+```{r}
+
+df <- pseudo_bulk_filtered %>% filter(cell_types=="neutrophils") %>% filter(condition %in% c("Naive","Sham"))
+
+df$cell_types %<>% droplevels()
+df$condition %<>% droplevels()
+
+pca_matrix_full <- df %>%
+  as_tibble() %>%
+  select(.sample, .feature, X) %>%
+  pivot_wider(names_from = .feature, values_from = X)
+
+# Calculate the variance for each gene (column)
+gene_variances <- apply(pca_matrix_full[,-1], 2, var)
+
+# Take top 10% most variable
+threshold <- quantile(gene_variances, 0.9, na.rm=T)
+
+# Filter for highly variable genes
+highly_variable_genes <- names(gene_variances[gene_variances >= threshold])
+pca_matrix <- pca_matrix_full %>% select(all_of(c(".sample", highly_variable_genes)))
+
+```
+
+Now add and integrate our stressed meninges neutrophils 
+```{r}
+# Load sce object
+combi <- readRDS(paste0(here::here("res/"),"combi_clustered_leiden_annotated.RDS"))
+
+load(file=here::here("res/amb_to_drop.R"))
+sce <- combi[!rowData(combi)$ID %in% amb_to_drop,]
+sce <- sce[,!sce$Annotation == "Erythrocytes"]
+```
+
+Extract neutrophils
+```{r}
+neuts <- sce[,sce$Annotation %in% "Neutrophils"]
+
+# Make pseudobulk
+pseudo_bulk_stress <- neuts %>%
+  tidySingleCellExperiment::aggregate_cells(c(group, cond))
+
+# Check cell numbers
+pseudo_bulk_stress %>% colData %>% as_tibble() %>% arrange(.aggregated_cells)
+
+# How many of their HVGs are in our dataset 
+highly_variable_genes %in% rownames(pseudo_bulk_stress) %>% table()
+
+# Perform PCA on the intersect of HVG in Kolabas and genes in stress
+highly_variable_genes_intersect <- highly_variable_genes[highly_variable_genes %in% rownames(pseudo_bulk_stress)]
+
+```
+
+```{r}
+
+# Subset stress to hvg intersect
+pseudo_bulk_stress_hvg <- pseudo_bulk_stress %>%
+  filter(.feature %in% highly_variable_genes_intersect) 
+
+# Ensure reorder rows for both
+pseudo_bulk_stress_hvg <- pseudo_bulk_stress_hvg[ highly_variable_genes_intersect, ]
+
+# Reorder Kolabas to only HVG intersect
+df <- df[highly_variable_genes_intersect, ]
+
+# Check TRUE
+identical(rownames(df), rownames(pseudo_bulk_stress_hvg))
+
+```
+
+Now run Kolabas PCA with HVG intersect
+```{r}
+
+pca_matrix <- df %>%
+  as_tibble() %>%
+  select(.sample, .feature, X) %>%
+  pivot_wider(names_from = .feature, values_from = X)
+
+# Remove the `.sample` column and convert to matrix
+pca_matrix_values <- pca_matrix %>%
+  select(-.sample) %>%
+  as.matrix()
+
+# Check rownames
+rownames(pca_matrix_values) <- pca_matrix$.sample
+
+# Perform PCA
+pca_result <- prcomp(pca_matrix_values, center = T, scale. = TRUE)
+
+# View the PCA result
+summary(pca_result)  # Check explained variance
+pca_result$x         # Principal component scores for each sample
+
+```
+
+
+Use same PCA model and apply to stress dataset 
+```{r}
+pca_matrix_stress <- pseudo_bulk_stress_hvg %>%
+  as_tibble() %>%
+  select(.sample, .feature, logcounts) %>%
+  pivot_wider(names_from = .feature, values_from = logcounts)
+
+# Remove the `.sample` column and convert to matrix
+pca_matrix_stress_values <- pca_matrix_stress %>%
+  select(-.sample) %>%
+  as.matrix()
+
+# Check rownames
+rownames(pca_matrix_stress_values) <- pca_matrix_stress$.sample
+
+# Scale the new sample using the PCA model parameters
+new_samples_scaled <- scale(pca_matrix_stress_values, center = pca_result$center, scale = pca_result$scale)
+
+# Project the scaled sample onto the PCA components by matrix multiplication
+new_sample_pca <- new_samples_scaled %*% pca_result$rotation
+
+# Combine original PCA scores with the new sample's PCA scores
+pca_scores_combined <- as.data.frame(rbind(pca_result$x, new_sample_pca))
+pca_scores_combined$sample <- rownames(pca_scores_combined)
+
+pca_scores_combined$region <- str_split_i(rownames(pca_scores_combined),"___",2)
+
+pca_scores_combined$condition <- str_split_i(rownames(pca_scores_combined),"___",3)
+
+library(RColorBrewer)
+# PC2 just represents condition (sham vs naive)
+ggplot(pca_scores_combined, aes(x=PC2, y=PC3)) + geom_point(aes(colour=condition), size=4) + scale_color_brewer(palette = "Paired") + theme_light()
+
+# So show PC1 and PC3
+ggplot(pca_scores_combined, aes(x=PC1, y=PC3)) + geom_point(aes(colour=region), size=4) + scale_color_brewer(palette = "Paired") + theme_light()
+
+```
+
+
+```{r}
+
+sessionInfo()
+
+```

@@ -5,14 +5,34 @@ date: "2024-12-10"
 ---
 Author: Mary-Ellen Lynall 2024
 
-Dataset downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE192616 on 11/12/24
+AIM: Test how similar the stress vs control meninges neutrophils and preneutrophils are to neutrophils from different locations (blood, various marrow samples)
 
+Kolabas dataset:
+Dataset downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE192616 on 11/12/24
 Accompanying paper: https://pubmed.ncbi.nlm.nih.gov/37562402/ 
 
-In Kolabas 2023 there are scRNAseq data from meninges, brain, calvaria, other bones. 
+GEO: !Series_overall_design	"A single-cell RNA sequencing experiment was conducted using 10x Genomics technology on samples from three distinct groups, which included six bones, meninges, and the brain. The study comprised three groups: those that underwent MCAo surgery, those that underwent sham surgery, and a group of naive animals. Each sample consisted of cells pooled from three animals, with a total of 32 samples utilized. The MCAo surgery group contributed 2 samples, each consisting of cells pooled from 3 different animals. The sham and naive groups served as control groups. In addition to the single-cell RNA sequencing, bulk RNA sequencing experiments were conducted using the Illumina ligation stranded mRNA preparation kit. These experiments involved samples from the six bones under the three conditions (naive, sham, and MCAo). Separate measurements were taken for 4-6 animals per condition, yielding a total of 95 samples. Furthermore, bulk RNA sequencing was carried out using Smart-seq2 for mini-bulks of about 50 CD45+/Cd11b+ sorted immune cells each from the skull and femur. These samples were taken from wildtype animals (5 in total) and 5xFAD animals (3 in total), amassing 168 samples overall, with approximately 20 samples per animal."
 
-AIM: Test how similar the meninges neutrophils are to neutrophils from each of those locations.
-HYPOTHESIS: Our stress-associated neutrophils are most similar to Kolabas meninges and closer to Kolabas calvaria than to other bones in the Kolabas dataset.
+!Sample_data_processing	"Supplementary_files_format_and_content: anndata (annotated data matrix) object saved in h5ad-file format (sc_adata_oct22m.h5ad, sc_adata_march22h.h5ad) as generated and used in the code at https://github.com/erturklab/skull_immune. The files contain the raw, preprocessed, normalized and annotated count data of all single cell experiments.
+
+GPL21103 contains relevant data
+
+-----
+Also adding Evrard 2018 - bulk RNAseq
+https://www.sciencedirect.com/science/article/pii/S1074761318300384?via%3Dihub
+
+Aiming for the data underlying figure 3C
+"To better understand the developmental relationship between preNeus, immature neutrophils (Ly6Glo/+ CXCR2−; termed immature Neus) and mature neutrophils (Ly6G+ CXCR2+; termed mature Neus), we sorted these three subsets and compared their morphology with sorted GMPs and blood neutrophils. Although GMP displayed a largely uncondensed nucleus with an immature cytosol, neutrophils progressively condensed their nucleus from a toroidal shape in preNeus to a poly-segmented shape in BM mature and blood neutrophils (Figure 3B). We also identified preNeus and immature Neus in the spleen (Figures S3B and S3E), but in much fewer numbers than in the BM (Figures S3C and S3D), and these cells were absent from the blood (data not shown).
+We next used whole-transcriptome sequencing (RNA-seq) to determine how the molecular signatures of these neutrophil precursors differed. Principal-component analysis (PCA) of all transcripts revealed distinct gene expression profiles between all subsets (Figure 3C)."
+
+Evrard count matrix at:
+https://ftp.ncbi.nlm.nih.gov/geo/series/GSE109nnn/GSE109467/suppl/GSE109467%5FreadCount%5Frenamed%5FgeneName%2Etxt%2Egz
+
+From Max Evrard (personal communication) 20250412
+
+BN refers to blood neutrophils, with the numbers likely indicating different biological replicates and the ZT (Zeitgeber time) indicated by the number following 'BN' (e.g., BN13 would be at ZT13, and BN5 at ZT5).
+EN refers to bone marrow immature neutrophils.
+LN refers to bone marrow mature neutrophils.
 
 ```{r}
 
@@ -20,11 +40,10 @@ setwd("/Users/mary/non_dropbox/exps/exp042_meninges_stress_dropseq/")
 library(here)
 ```
 
-
+Now load Kolabas
 ```{r}
 
 # Processed data are in supplementary so download
-
 download_file_if_needed <- function(url, dest_path) {
   decompressed_file <- sub("\\.gz$", "", dest_path)  # Remove the ".gz" extension
   # Check if the unzipped file already exists
@@ -50,8 +69,9 @@ dest_path <- "/Users/mary/Documents/research/exps/public/scrnaseq/kolabas2023/GS
 download_file_if_needed(url, dest_path)
 
 # Now read the decompressed file
+# BiocManager::install("zellkonverter")
 library(zellkonverter)
-adata <- zellkonverter::readH5AD(sub("\\.gz$", "", dest_path))
+adata <- zellkonverter::readH5AD(sub("\\.gz$", "", dest_path)) 
 
 ```
 
@@ -61,20 +81,29 @@ View
 library(tidyverse)
 library(SingleCellExperiment)
 library(tidySingleCellExperiment)
+library(magrittr)
 
-# Drop raw data as very large
-assay(adata, "raw_counts") <- NULL
+# raw_counts and X (log norm counts)
+assays(adata)
 
 # Check info. 32 samples, 8 tissues
 adata
 conditions <- adata %>% colData() %>% as_tibble() %>% select(sample_id, region, condition, cell_types) %>% unique()
-conditions$cell_types %>% unique() # There are "pro neutrophils" and "neutrophils" here
+conditions$cell_types %>% unique() # There are "pro  neutrophils" and "neutrophils" here
 conditions$region %>% unique() # Brain Femur Humerus Meninges Pelvis Scapula Skull Vertebra
 
 # Drop everyting except neuts 
-adata <- adata %>% filter(cell_types %in% c("neutrophils"))
+# adata <- adata %>% filter(cell_types %in% c("neutrophils"))
 
-tmp <- adata %>% colData() %>% as_tibble() %>% select(sample_id, region, condition) %>% unique() 
+# Drop everything except neuts and preneutrophils
+adata <- adata %>% filter(cell_types %in% c("pro neutrophils","neutrophils"))
+
+# Make naming consistent with other datasets
+adata$cell_types %<>% as.character()
+adata$cell_types[adata$cell_types %in% "pro neutrophils"] <- "Preneutrophils"
+adata$cell_types[adata$cell_types %in% "neutrophils"] <- "Neutrophils"
+
+tmp <- adata %>% colData() %>% as_tibble() %>% select(sample_id, region, condition, cell_types) %>% unique() 
 # View all conditions (for which we have neuts)
 # One sham, one naive and two MCAO for each condition
 tmp %>% arrange(region) %>% as.data.frame()
@@ -82,6 +111,7 @@ tmp %>% arrange(region) %>% as.data.frame()
 ```
 
 ```{r}
+
 # get a summarized experiment
 adata$cellgroup <- paste(adata$sample_id, adata$region, adata$condition, adata$cell_types, sep="_")
 
@@ -94,94 +124,126 @@ if ("cellgroup" %in% colnames(colData(adata))) {
   stop("The column 'cellgroup' does not exist in colData(adata).")
 }
 
-pseudo_bulk <- adata %>%
-  tidySingleCellExperiment::aggregate_cells(c(sample_id, region, condition, cell_types))
+summary(as.vector(assay(adata, "raw_counts")[1:100, 1:10]))
+summary(as.vector(assay(adata, "X")[1:100, 1:10]))
+lib_sizes <- colSums(assay(adata))
+summary(lib_sizes)
+
+# Drop non-needed data as interferes with joins
+# Pseudobulk based on RAW counts
+minimal_sce <- SingleCellExperiment::SingleCellExperiment(
+  assays = list(raw_counts = assay(adata, "raw_counts")),
+  colData = colData(adata)
+)
+
+pseudo_bulk <-
+  aggregate_cells(minimal_sce, c(sample_id, region, condition, cell_types))
 
 # Check low cell numbers
 pseudo_bulk %>% colData %>% as_tibble() %>% arrange(.aggregated_cells)
 
-# Remove samples with <10 aggregated cells
+# Remove samples with <25 aggregated cells
 library(tidySummarizedExperiment)
-pseudo_bulk_filtered <- pseudo_bulk %>% filter(.aggregated_cells>=10)
+pseudo_bulk_kolabas <- pseudo_bulk %>% filter(.aggregated_cells>=25)
 
-pseudo_bulk_filtered %>% as_tibble() %>% arrange(.aggregated_cells)
+pseudo_bulk_kolabas %>% as_tibble() %>% arrange(.aggregated_cells) 
+
+# Print cells per condition
+cell_counts_df <- colData(pseudo_bulk_kolabas) %>%
+  as_tibble() %>%
+  mutate(sample = colnames(pseudo_bulk_kolabas)) %>%
+  select(sample, .aggregated_cells) %>%
+  arrange(desc(.aggregated_cells))
+
+cell_counts_df %>% as.data.frame()
+
+# Drop stroke and also sham, as sham had big effect on transcriptome. Keep only naive cells for building PCA.
+pseudo_bulk_kolabas <- pseudo_bulk_kolabas %>% filter(condition %in% c("Naive"))
 
 ```
 
 
+VST the Kolabas
 ```{r}
+library(DESeq2)
 
-library(tidyr)
-library(dplyr)
+# Plot library sizes for Kolabas pseudobulk
+library_sizes <- colSums(assay(pseudo_bulk_kolabas, "raw_counts"))
+libsize_df <- tibble(sample = names(library_sizes), libsize = library_sizes)
 
-# Pivot data: rows = samples, columns = features, values = assay data (X)
-library(magrittr)
-df <- pseudo_bulk_filtered
-df$cell_types %<>% droplevels()
-df$condition %<>% droplevels()
+ggplot(libsize_df, aes(x = reorder(sample, -libsize), y = libsize)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Library sizes of Kolabas pseudobulk samples", x = "Sample", y = "Total raw counts") +
+  theme_minimal()
 
-pca_matrix_full <- df %>%
+# Pivot pseudobulk counts to a gene x sample matrix
+kolabas_counts <- pseudo_bulk_kolabas %>%
   as_tibble() %>%
-  select(.sample, .feature, X) %>%
-  pivot_wider(names_from = .feature, values_from = X)
-
-# Calculate the variance for each gene (column)
-gene_variances <- apply(pca_matrix_full[,-1], 2, var)
-
-# Take top 10% most variable
-threshold <- quantile(gene_variances, 0.9, na.rm=T)
-
-# Filter for highly variable genes
-highly_variable_genes <- names(gene_variances[gene_variances >= threshold])
-pca_matrix <- pca_matrix_full %>% select(all_of(c(".sample", highly_variable_genes)))
-
-# Remove the `.sample` column and convert to matrix
-pca_matrix_values <- pca_matrix %>%
-  select(-.sample) %>%
+  select(.sample, .feature, raw_counts) %>%
+  pivot_wider(names_from = .sample, values_from = raw_counts) %>%
+  column_to_rownames(var = ".feature") %>%
   as.matrix()
 
-# Check rownames
-rownames(pca_matrix_values) <- pca_matrix$.sample
+# Step 2: Create colData for DESeq2
+sample_meta <- colData(pseudo_bulk_kolabas)[colnames(kolabas_counts), , drop = FALSE]
 
-# Perform PCA
-pca_result <- prcomp(pca_matrix_values, center = T, scale. = TRUE)
+# Construct DESeqDataSet
+dds_kolabas <- DESeqDataSetFromMatrix(
+  countData = round(kolabas_counts),
+  colData = sample_meta,
+  design = ~ 1
+)
 
-# View the PCA result
-summary(pca_result)  # Check explained variance
-pca_result$x         # Principal component scores for each sample
+# Filter out low-count genes 
+dds_kolabas <- dds_kolabas[rowSums(counts(dds_kolabas)) > 10, ]
 
-library(factoextra)
-fviz_pca_ind(pca_result, label="none", habillage = df$cell_types, addEllipses = T, ellipse.level=0.95) + scale_color_brewer(palette="Dark2")
+dds_libsize <- colSums(counts(dds_kolabas))
+dds_libsize_df <- tibble(sample = names(dds_libsize), libsize = dds_libsize)
 
+# Apply VST
+vst_kolabas <- vst(dds_kolabas, blind = TRUE)
+vst_mat_kolabas <- assay(vst_kolabas)
+
+# Look at post-VST values
+vst_long <- reshape2::melt(vst_mat_kolabas)
+colnames(vst_long) <- c("Gene", "Sample", "Expression")
+
+ggplot(vst_long, aes(x = Sample, y = Expression)) +
+  geom_boxplot(outlier.size = 0.5) +
+  labs(title = "VST Expression Distributions per Sample", y = "VST Expression", x = "Sample") +
+  coord_flip() +
+  theme_minimal()
+
+# Add VST back to pseudo_bulk_kolabas
+common_genes <- intersect(rownames(vst_mat_kolabas), rownames(pseudo_bulk_kolabas))
+vst_mat_kolabas <- vst_mat_kolabas[common_genes, , drop = FALSE]
+pseudo_bulk_kolabas <- pseudo_bulk_kolabas[common_genes, ]
+assay(pseudo_bulk_kolabas, "vst") <- vst_mat_kolabas
 ```
 
-Now just neuts and just sham/naive
-
+PCA all Kolabas samples
 ```{r}
 
-df <- pseudo_bulk_filtered %>% filter(cell_types=="neutrophils") %>% filter(condition %in% c("Naive","Sham"))
+pca <- prcomp(t(assay(pseudo_bulk_kolabas, "vst")), scale. = TRUE)
+pca_df <- as.data.frame(pca$x)
+pca_df$sample <- colnames(pseudo_bulk_kolabas)
 
-df$cell_types %<>% droplevels()
-df$condition %<>% droplevels()
+ggplot(pca_df, aes(x = PC1, y = PC2, label = sample)) +
+  geom_point() +
+  geom_text(size = 2, vjust = -1) +
+  theme_minimal() +
+  labs(title = "PCA of Pseudobulk VST", x = "PC1", y = "PC2")
 
-pca_matrix_full <- df %>%
-  as_tibble() %>%
-  select(.sample, .feature, X) %>%
-  pivot_wider(names_from = .feature, values_from = X)
+# Drop severe outliers
+samples_to_remove <- c("MUC12846___Meninges___Naive___Preneutrophils","MUC12846___Meninges___Naive___Neutrophils")
 
-# Calculate the variance for each gene (column)
-gene_variances <- apply(pca_matrix_full[,-1], 2, var)
-
-# Take top 10% most variable
-threshold <- quantile(gene_variances, 0.9, na.rm=T)
-
-# Filter for highly variable genes
-highly_variable_genes <- names(gene_variances[gene_variances >= threshold])
-pca_matrix <- pca_matrix_full %>% select(all_of(c(".sample", highly_variable_genes)))
+pseudo_bulk_kolabas <- pseudo_bulk_kolabas[, !colnames(pseudo_bulk_kolabas) %in% samples_to_remove]
 
 ```
 
-Now add and integrate our stressed meninges neutrophils 
+
+Load Kigar stressed meninges neutrophils and preneutrophils
 ```{r}
 # Load sce object
 combi <- readRDS(paste0(here::here("res/"),"combi_clustered_leiden_annotated.RDS"))
@@ -189,27 +251,225 @@ combi <- readRDS(paste0(here::here("res/"),"combi_clustered_leiden_annotated.RDS
 load(file=here::here("res/amb_to_drop.R"))
 sce <- combi[!rowData(combi)$ID %in% amb_to_drop,]
 sce <- sce[,!sce$Annotation == "Erythrocytes"]
+
+neuts <- sce[,sce$Annotation %in% c("Preneutrophils","Neutrophils")]
 ```
 
-Extract neutrophils
-```{r}
-neuts <- sce[,sce$Annotation %in% "Neutrophils"]
 
-# Make pseudobulk
+Make Kigar pseudobulks from raw counts and apply VST
+```{r}
+
+# Make pseudobulk based on raw counts
 pseudo_bulk_stress <- neuts %>%
-  tidySingleCellExperiment::aggregate_cells(c(group, cond))
+  tidySingleCellExperiment::aggregate_cells(c(group, cond, Annotation), assays = "counts")
 
 # Check cell numbers
-pseudo_bulk_stress %>% colData %>% as_tibble() %>% arrange(.aggregated_cells)
+pseudo_bulk_stress %>% colData %>% as_tibble() %>% arrange(.aggregated_cells) # Minimum 25 like Kolabas
 
-# How many of their HVGs are in our dataset 
-highly_variable_genes %in% rownames(pseudo_bulk_stress) %>% table()
+# Plot library sizes for stress pseudobulks
+library_sizes <- colSums(assay(pseudo_bulk_stress, "counts"))
+libsize_df <- tibble(sample = names(library_sizes), libsize = library_sizes)
 
-# Perform PCA on the intersect of HVG in Kolabas and genes in stress
-highly_variable_genes_intersect <- highly_variable_genes[highly_variable_genes %in% rownames(pseudo_bulk_stress)]
+ggplot(libsize_df, aes(x = reorder(sample, -libsize), y = libsize)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Library sizes of Stress pseudobulk samples", x = "Sample", y = "Total raw counts") +
+  theme_minimal()
+
+# Pivot pseudobulk counts to a gene x sample matrix
+stress_counts <- pseudo_bulk_stress %>%
+  as_tibble() %>%
+  select(.sample, .feature, counts) %>%
+  pivot_wider(names_from = .sample, values_from = counts) %>%
+  column_to_rownames(var = ".feature") %>%
+  as.matrix()
+
+# Create colData for DESeq2
+sample_meta <- colData(pseudo_bulk_stress)[colnames(stress_counts), , drop = FALSE]
+
+# Construct DESeqDataSet
+dds_stress <- DESeqDataSetFromMatrix(
+  countData = round(stress_counts),
+  colData = sample_meta,
+  design = ~ 1
+)
+
+# Filter out low-count genes - NO, keep all genes, as filtering later by hvg intersect
+# dds_stress <- dds_stress[rowSums(counts(dds_stress)) > 10, ]
+
+# Apply VST
+vst_stress <- vst(dds_stress, blind = TRUE)
+vst_mat_stress <- assay(vst_stress)
+
+# Look at post-VST values
+vst_long <- reshape2::melt(vst_mat_stress)
+colnames(vst_long) <- c("Gene", "Sample", "Expression")
+
+ggplot(vst_long, aes(x = Sample, y = Expression)) +
+  geom_boxplot(outlier.size = 0.5) +
+  labs(title = "VST Expression Distributions per Sample", y = "VST Expression", x = "Sample") +
+  coord_flip() +
+  theme_minimal()
+
+# Add VST back to pseudo_bulk_stress
+common_genes <- intersect(rownames(vst_mat_stress), rownames(pseudo_bulk_stress))
+vst_mat_stress <- vst_mat_stress[common_genes, , drop = FALSE]
+pseudo_bulk_stress <- pseudo_bulk_stress[common_genes, ]
+assay(pseudo_bulk_stress, "vst") <- vst_mat_stress
+```
+
+
+Download Evrard 2018 data (GEO supplementary file)
+```{r}
+
+matrix_file = '/Users/mary/Documents/research/exps/public/bulkrnaseq/evrard2018/GSE109467_readCount_renamed_geneName.txt'
+
+# Read the data
+raw_counts <- read_tsv(matrix_file, col_types = cols(.default = "c"))
+
+colnames(raw_counts)[1] <- "gene_id"
+
+# Convert expression columns to numeric
+expr_numeric <- raw_counts %>%
+  select(-Chr, -Start, -End, -Strand, -Length) %>%
+  mutate(across(-c(1, 2), as.numeric))  # keep gene_id and gene_name as character
+
+# Add average expression
+expr_filtered <- expr_numeric %>%
+  rowwise() %>%
+  mutate(avg_expr = mean(c_across(-c(gene_id, gene_name)), na.rm = TRUE)) %>%
+  ungroup()
+
+# Keep the row with highest avg expression for each gene_name
+expr_best <- expr_filtered %>%
+  group_by(gene_name) %>%
+  slice_max(order_by = avg_expr, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Now make it a matrix with gene_name as rownames
+expr_counts <- expr_best %>%
+  select(-gene_id, -avg_expr) %>%
+  column_to_rownames("gene_name") %>%
+  as.matrix()
+
+names <- colnames(expr_counts)
+
+colnames(expr_counts) <- paste0(names, "___", ifelse(startsWith(names, "BN"), "Neutrophils___Blood",
+                         ifelse(startsWith(names, "EN"), "Immature neutrophils___Femur",
+                         ifelse(startsWith(names, "LN"), "Neutrophils___Femur",
+                         ifelse(startsWith(names, "PN"), "Preneutrophils___Femur",
+                         ifelse(startsWith(names, "GMP"), "GMP___Femur", names))))))                               
+               
+# Create DESeq2 dataset
+dds <- DESeqDataSetFromMatrix(countData = expr_counts,
+                              colData = data.frame(row.names = colnames(expr_counts)),
+                              design = ~ 1)
+
+# Filter genes with very low counts
+# dds <- dds[rowSums(counts(dds)) >= 10, ]
+
+# Normalize with variance stabilizing transformation
+vsd <- vst(dds, blind = TRUE)
+
+# Extract normalized matrix
+vsd_mat <- assay(vsd)
+
+# Convert to long format for ggplot
+library(reshape2)
+vsd_df <- melt(vsd_mat)
+colnames(vsd_df) <- c("Gene", "Sample", "Expression")
+
+# Boxplot
+ggplot(vsd_df, aes(x = Sample, y = Expression)) +
+  geom_boxplot(outlier.size = 0.5) +
+  labs(title = "Normalized Expression Distributions (VST)", y = "Expression", x = "Sample") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create a SummarizedExperiment
+bulk_evrard <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(vst = vsd_mat),
+  colData = colData(vsd),          # Use sample metadata from DESeq2 object
+  rowData = rowData(vsd)           # Keep gene metadata if available
+)
+
+# Drop GMP 
+keep <- !startsWith(names, "GMP") 
+
+# Subset the SummarizedExperiment
+bulk_evrard <- bulk_evrard[, keep]
 
 ```
 
+Make Kolabas pseudo_bulk and calculate hvgs.
+```{r}
+library(tidyr)
+library(dplyr)
+library(magrittr)
+
+pseudo_bulk_kolabas$condition %<>% droplevels()
+
+dim(pseudo_bulk_kolabas) 
+
+tmp <- pseudo_bulk_kolabas %>%
+  as_tibble() %>%
+  select(.sample, .feature, vst) %>%
+  pivot_wider(names_from = .feature, values_from = vst)
+
+# Calculate the variance for each gene (column)
+gene_variances <- apply(tmp[,-1], 2, var)
+
+# Take top 20% most variable 
+threshold <- quantile(gene_variances, 0.8, na.rm=T)
+
+# Filter for highly variable genes
+highly_variable_genes <- names(gene_variances[gene_variances >= threshold])
+```
+
+Get hvg common to all 3 datasets
+```{r}
+
+# Get common HVGs across all three datasets
+highly_variable_genes_intersect <- highly_variable_genes[
+  highly_variable_genes %in% rownames(pseudo_bulk_stress) &
+  highly_variable_genes %in% rownames(bulk_evrard)
+]
+
+print(length(highly_variable_genes)) # 2287
+print(length(highly_variable_genes_intersect)) # 1999
+
+```
+
+
+Make Kolabas PCA with HVG intersect
+```{r}
+
+# Reorder Kolabas to only HVG intersect
+pseudo_bulk_kolabas <- pseudo_bulk_kolabas[highly_variable_genes_intersect, ]
+
+pca_matrix_kolabas <- pseudo_bulk_kolabas %>%
+  as_tibble() %>%
+  select(.sample, .feature, vst) %>%
+  pivot_wider(names_from = .feature, values_from = vst) %>% select(all_of(c(".sample", highly_variable_genes_intersect)))
+
+# Remove the `.sample` column and convert to matrix
+pca_matrix_kolabas_values <- pca_matrix_kolabas %>%
+  select(-.sample) %>%
+  as.matrix()
+
+# Check rownames
+rownames(pca_matrix_kolabas_values) <- pca_matrix_kolabas$.sample
+
+# Perform PCA
+pca_result <- prcomp(pca_matrix_kolabas_values, center = T, scale. = TRUE)
+
+# View the PCA result
+summary(pca_result)  # Check explained variance
+# pca_result$x %>% head        # Principal component scores for each sample
+# PC1 is 93% variance, PC2 is 1.9%, PC3 is 1.1%, PC4 is 1.0%
+
+```
+
+Subset Kigar to hvg intersect and apply Kolabas PCA transformation
 ```{r}
 
 # Subset stress to hvg intersect
@@ -219,46 +479,13 @@ pseudo_bulk_stress_hvg <- pseudo_bulk_stress %>%
 # Ensure reorder rows for both
 pseudo_bulk_stress_hvg <- pseudo_bulk_stress_hvg[ highly_variable_genes_intersect, ]
 
-# Reorder Kolabas to only HVG intersect
-df <- df[highly_variable_genes_intersect, ]
-
 # Check TRUE
-identical(rownames(df), rownames(pseudo_bulk_stress_hvg))
+identical(rownames(pseudo_bulk_kolabas), rownames(pseudo_bulk_stress_hvg))
 
-```
-
-Now run Kolabas PCA with HVG intersect
-```{r}
-
-pca_matrix <- df %>%
-  as_tibble() %>%
-  select(.sample, .feature, X) %>%
-  pivot_wider(names_from = .feature, values_from = X)
-
-# Remove the `.sample` column and convert to matrix
-pca_matrix_values <- pca_matrix %>%
-  select(-.sample) %>%
-  as.matrix()
-
-# Check rownames
-rownames(pca_matrix_values) <- pca_matrix$.sample
-
-# Perform PCA
-pca_result <- prcomp(pca_matrix_values, center = T, scale. = TRUE)
-
-# View the PCA result
-summary(pca_result)  # Check explained variance
-pca_result$x         # Principal component scores for each sample
-
-```
-
-
-Use same PCA model and apply to stress dataset 
-```{r}
 pca_matrix_stress <- pseudo_bulk_stress_hvg %>%
   as_tibble() %>%
-  select(.sample, .feature, logcounts) %>%
-  pivot_wider(names_from = .feature, values_from = logcounts)
+  select(.sample, .feature, vst) %>%
+  pivot_wider(names_from = .feature, values_from = "vst")
 
 # Remove the `.sample` column and convert to matrix
 pca_matrix_stress_values <- pca_matrix_stress %>%
@@ -268,26 +495,187 @@ pca_matrix_stress_values <- pca_matrix_stress %>%
 # Check rownames
 rownames(pca_matrix_stress_values) <- pca_matrix_stress$.sample
 
+# Quantile normalize the matrix to better match distribution in Kolabas
+library(preprocessCore)
+
+# Make sure both matrices are numeric and have no NAs
+stopifnot(is.numeric(pca_matrix_stress_values), !any(is.na(pca_matrix_stress_values)))
+stopifnot(is.numeric(pca_matrix_kolabas_values), !any(is.na(pca_matrix_kolabas_values)))
+
+# Quantile normalize stress values to match the distribution of pca_matrix_kolabas_values
+pca_matrix_stress_qn <- t(normalize.quantiles.use.target(
+  t(as.matrix(pca_matrix_stress_values)),
+  target = sort(colMeans(pca_matrix_kolabas_values))
+))
+
+# Restore row and column names
+rownames(pca_matrix_stress_qn) <- rownames(pca_matrix_stress_values)
+colnames(pca_matrix_stress_qn) <- colnames(pca_matrix_stress_values)
+
 # Scale the new sample using the PCA model parameters
-new_samples_scaled <- scale(pca_matrix_stress_values, center = pca_result$center, scale = pca_result$scale)
+new_samples_scaled <- scale(pca_matrix_stress_qn, center = pca_result$center, scale = pca_result$scale)
 
 # Project the scaled sample onto the PCA components by matrix multiplication
 new_sample_pca <- new_samples_scaled %*% pca_result$rotation
 
-# Combine original PCA scores with the new sample's PCA scores
-pca_scores_combined <- as.data.frame(rbind(pca_result$x, new_sample_pca))
-pca_scores_combined$sample <- rownames(pca_scores_combined)
+# Add labels
+kolabas_pca <- as.data.frame(pca_result$x)
+kolabas_pca$sample <- rownames(kolabas_pca)
+kolabas_pca$region <- str_split_i(rownames(kolabas_pca),"___",2)
+kolabas_pca$dataset <- "Kolabas"
+kolabas_pca$condition <- str_split_i(rownames(kolabas_pca),"___",3)
+kolabas_pca$dataset <- "Kolabas"
+kolabas_pca$celltype <- str_split_i(rownames(kolabas_pca),"___",4)
 
-pca_scores_combined$region <- str_split_i(rownames(pca_scores_combined),"___",2)
+# Match naming to stress dataset
+kolabas_pca$condition[kolabas_pca$condition %in% "Naive"] <- "HC"
+kolabas_pca %>% sample_n(6)
 
-pca_scores_combined$condition <- str_split_i(rownames(pca_scores_combined),"___",3)
+# Add stress dataset labels
+new_sample_pca <- as.data.frame(new_sample_pca)
+new_sample_pca$sample <- rownames(new_sample_pca)
+new_sample_pca$region <- "Meninges"
+new_sample_pca$condition <- str_split_i(rownames(new_sample_pca),"___",2)
+new_sample_pca$dataset <- "Kigar"
+new_sample_pca$celltype <- str_split_i(rownames(new_sample_pca),"___",3)
+new_sample_pca %>% sample_n(6)
+
+# Bind original PCA scores with the new sample's PCA scores
+pca_scores_combined <- as.data.frame(rbind(kolabas_pca, new_sample_pca))
 
 library(RColorBrewer)
-# PC2 just represents condition (sham vs naive)
-ggplot(pca_scores_combined, aes(x=PC2, y=PC3)) + geom_point(aes(colour=condition), size=4) + scale_color_brewer(palette = "Paired") + theme_light()
+# PC1 represents cell type
+ggplot(pca_scores_combined, aes(x=PC1, y=PC2)) + geom_point(aes(colour=celltype), size=3) + scale_color_brewer(palette = "Paired") + theme_light()
 
-# So show PC1 and PC3
-ggplot(pca_scores_combined, aes(x=PC1, y=PC3)) + geom_point(aes(colour=region), size=4) + scale_color_brewer(palette = "Paired") + theme_light()
+# PC2 represents tissue of origion
+ggplot(pca_scores_combined, aes(x=PC1, y=PC2)) + geom_point(aes(colour=region), size=3) + scale_color_brewer(palette = "Paired") + theme_light()
+
+library(ggrepel)
+ggplot(pca_scores_combined, aes(x = PC1, y = PC2)) +
+  geom_point(aes(colour = region), size = 3) +
+  geom_text_repel(aes(label = sample), size = 4, max.overlaps = 100) +
+  scale_color_brewer(palette = "Paired") +
+  theme_light() +
+  labs(title = "PCA with Sample Labels", x = "PC1", y = "PC2")
+#ggsave(here("pics/kolabas_neutrophils_PC2.pdf"), width=4,height=4)
+
+# PC3 reflects dataset
+ggplot(pca_scores_combined, aes(x=PC3, y=PC4)) + geom_point(aes(colour=dataset), size=4) + scale_color_brewer(palette = "Paired") + theme_light()
+
+ggplot(pca_scores_combined, aes(x=PC4, y=PC3)) + geom_point(aes(colour=condition), size=4) + scale_color_brewer(palette = "Paired") + theme_light()
+
+```
+
+
+Now add the Evrard PCA
+```{r}
+
+# Subset evrard to hvg intersect
+bulk_evrard_hvg <- bulk_evrard %>%
+  filter(.feature %in% highly_variable_genes_intersect) 
+
+# Ensure reorder rows to match stress and kolabas above
+bulk_evrard_hvg <- bulk_evrard_hvg[ highly_variable_genes_intersect, ]
+
+# Check TRUE
+identical(rownames(pseudo_bulk_kolabas), rownames(bulk_evrard_hvg))
+
+pca_matrix_evrard <- bulk_evrard_hvg %>%
+  as_tibble() %>%
+  select(.sample, .feature, vst) %>%
+  pivot_wider(names_from = .feature, values_from = "vst")
+
+# Remove the `.sample` column and convert to matrix
+pca_matrix_evrard_values <- pca_matrix_evrard %>%
+  select(-.sample) %>%
+  as.matrix()
+
+# Check rownames
+rownames(pca_matrix_evrard_values) <- pca_matrix_evrard$.sample
+
+# Make sure both matrices are numeric and have no NAs
+stopifnot(is.numeric(pca_matrix_evrard_values), !any(is.na(pca_matrix_evrard_values)))
+stopifnot(is.numeric(pca_matrix_kolabas_values), !any(is.na(pca_matrix_kolabas_values)))
+
+# Quantile normalize evrard values to match the distribution of pca_matrix_kolabas_values
+pca_matrix_evrard_qn <- t(normalize.quantiles.use.target(
+  t(as.matrix(pca_matrix_evrard_values)),
+  target = sort(colMeans(pca_matrix_kolabas_values))
+))
+
+# Restore row and column names
+rownames(pca_matrix_evrard_qn) <- rownames(pca_matrix_evrard_values)
+colnames(pca_matrix_evrard_qn) <- colnames(pca_matrix_evrard_values)
+
+# Scale the new sample using the PCA model parameters
+new_samples_scaled_evrard <- scale(pca_matrix_evrard_qn, center = pca_result$center, scale = pca_result$scale)
+
+# Project the scaled sample onto the PCA components by matrix multiplication
+evrard_pca <- as.data.frame(new_samples_scaled_evrard %*% pca_result$rotation)
+
+evrard_pca$sample <- str_split_i(rownames(evrard_pca),"___",1)
+evrard_pca$region <- str_split_i(rownames(evrard_pca),"___",3)
+evrard_pca$condition <- "HC"
+evrard_pca$dataset <- "Evrard"
+evrard_pca$celltype <- str_split_i(rownames(evrard_pca),"___",2)
+evrard_pca %>% sample_n(6)
+
+# Combine original PCA scores with the new sample's PCA scores
+pca_scores_combined_3 <- as.data.frame(rbind(pca_scores_combined, evrard_pca))
+
+ggplot(pca_scores_combined_3, aes(x=PC1, y=PC2)) + geom_point(aes(colour=region), size=2) + scale_color_brewer(palette = "Paired") + theme_light()
+
+```
+
+Final plots
+```{r}
+
+# Region plot
+ggplot(pca_scores_combined_3, aes(x = PC1, y = PC2)) +
+  geom_point(aes(colour = region, shape = dataset), size = 3) +
+  #geom_text_repel(aes(label = sample), size = 3, max.overlaps = 100) +
+  scale_color_brewer(palette = "Paired") +
+  theme_light() +
+  labs(title = "", x = "PC1", y = "PC2")
+
+
+ggplot(pca_scores_combined_3, aes(x = PC1, y = PC2)) +
+  geom_point(aes(colour = celltype, shape = dataset), size = 3) +
+  #geom_text_repel(aes(label = sample), size = 3, max.overlaps = 100) +
+  scale_color_brewer(palette = "Paired") +
+  theme_light() +
+  labs(title = "", x = "PC1", y = "PC2")
+
+ggplot(pca_scores_combined_3, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape = dataset, fill = celltype, colour = condition), size = 3, stroke = 0.4) +
+  scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  scale_fill_brewer(palette = "Paired") +
+  scale_colour_manual(values = c("white", "black")) +
+  guides(
+    fill = guide_legend(override.aes = list(shape = 22, colour = "black")), # Show fill colors with black border
+    colour = guide_legend(override.aes = list(shape = 22, fill = "white"))  # Show border color only
+  ) +
+  labs(title = "", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+ggsave(here("pics/neutrophils_3datasets_condition_celltype.pdf"), width=5, height=5)
+
+ggplot(pca_scores_combined_3, aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape = dataset, fill = region, colour = condition), size = 3, stroke = 0.4) +
+  scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  scale_fill_brewer(palette = "Paired") +
+  scale_colour_manual(values = c("white", "black")) +
+  guides(
+    fill = guide_legend(override.aes = list(shape = 22, colour = "black")), # Show fill colors with black border
+    colour = guide_legend(override.aes = list(shape = 22, fill = "white"))  # Show border color only
+  ) +
+  labs(title = "", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+ggsave(here("pics/neutrophils_3datasets_condition_region.pdf"), width=5, height=5)
+
+ggplot(pca_scores_combined_3, aes(x=PC2, y=PC3)) + geom_point(aes(colour=region), size=2) + scale_color_brewer(palette = "Paired") + theme_light()
+ggsave(here("pics/three_datasets_PC2_PC3.pdf"), width=5,height=5)
 
 ```
 

@@ -14,4 +14,4 @@ Meningeal single cell analysis: neutrophil pseudotime analysis
 Meningeal single cell analysis: pathway analysis related to neutrophils
 
 ## neutrophilstress05.Rmd
-Comparison of meningeal neutrophils to Kolabas 2023 multi-tissue scRNAseq dataset
+Comparison of meningeal neutrophils to Kolabas 2023 and Evrard 2018 multi-tissue neutrophil datasets

@@ -1,4 +1,5 @@
 # meningeal_neut
+Code accompanying 2025 Nat Comm manuscript, "Chronic social defeat stress induces meningeal neutrophilia via type I interferon signaling in male mice" ([doi: 10.1038/s41467-025-62840-5](https://doi.org/10.1038/s41467-025-62840-5))
 
 ## neutrophilstress01.Rmd 
 Meningeal single cell analysis: cell cycle, ribosomal genes, view differential expression results 
